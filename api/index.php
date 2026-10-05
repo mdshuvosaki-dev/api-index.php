@@ -233,7 +233,7 @@ function homeView($uid, $name) {
     return [$text, kb([
         [b('📂 My Uploads', 'uploads'), b('👤 Profile', 'profile')],
         [b('🏆 Leaderboard', 'board'), b('🎁 Invite & Earn', 'invite')],
-        [bu('🔒 Privacy', PRIVACY_URL), bu('📢 Channel', CHANNEL_URL)],
+        [bu('🔒 Privacy', https://t.me/TECH_BD_BY_MUSTAFIZUR0), bu('📢 Channel', https://t.me/TECH_BD_BY_MUSTAFIZUR0)],
     ])];
 }
 
