@@ -1,10 +1,19 @@
 <?php
+ini_set('display_errors', '1');
+error_reporting(E_ALL);
+register_shutdown_function(function () {
+    $e = error_get_last();
+    if ($e && in_array($e['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+        echo "\nFATAL: {$e['message']} (line {$e['line']})";
+    }
+});
+
 // ============ কনফিগ ============
 function envv($k, $d = '') { $v = getenv($k); return ($v !== false && $v !== '') ? $v : $d; }
 
-define('BOT_TOKEN',   envv('BOT_TOKEN', '8909379894:AAFPjFlF5JqasJ_R3PfL_rEch4OrWJg8j4U);
+define('BOT_TOKEN',   envv('BOT_TOKEN', '8909379894:AAGTqrzB8jEP3A8rvSycRzrC23ISpFhQb68'));                  // Vercel Environment Variables এ দিন
 define('FIRST_IMGBB', envv('IMGBB_API_KEY', 'adf843ba46ace623341b5b29dabdd06e'));
-define('SECRET',      envv('SECRET', 'ImgHippoSecret2026x'));
+define('SECRET',      envv('SECRET', 'ImgHippoSecret2026x'));  // শুধু A-Z a-z 0-9 _ -
 define('CHANNEL_URL', envv('CHANNEL_URL', 'https://t.me/telegram'));   // নিজের চ্যানেল লিংক দিন
 define('PRIVACY_URL', envv('PRIVACY_URL', 'https://telegram.org/privacy'));
 define('UP_URL',      envv('UPSTASH_REDIS_REST_URL', envv('KV_REST_API_URL')));
@@ -233,7 +242,7 @@ function homeView($uid, $name) {
     return [$text, kb([
         [b('📂 My Uploads', 'uploads'), b('👤 Profile', 'profile')],
         [b('🏆 Leaderboard', 'board'), b('🎁 Invite & Earn', 'invite')],
-        [bu('🔒 Privacy', https://t.me/TECH_BD_BY_MUSTAFIZUR0), bu('📢 Channel', https://t.me/TECH_BD_BY_MUSTAFIZUR0)],
+        [bu('🔒 Privacy', PRIVACY_URL), bu('📢 Channel',https://t.me/TECH_BD_BY_MUSTAFIZUR0 )],
     ])];
 }
 
@@ -291,7 +300,7 @@ function newLink($uid, $url, $w, $h, $size, $fmt, $secs) {
 }
 
 function getLink($sid) {
-    $j = R('GET', 'link:' . preg_replace('/[^a-z0-9]/', '', $sid));
+    $j = R('GET', 'link:' . preg_replace('/[^a-z0-9]/', '', (string)$sid));
     return $j ? json_decode($j, true) : null;
 }
 
@@ -409,7 +418,8 @@ function handleImage($msg) {
     R('HINCRBY', "user:$uid", 'uploads', 1);
     R('INCRBY', 'stat:used', $size);
     R('INCRBY', 'stat:uploads', 1);
-    $sid = newLink($uid, $url, $w, $h, $size, $fmt, sprintf('%.1f', microtime(true) - $t0) . 's' === '' ? '0' : sprintf('%.1f', microtime(true) - $t0));
+    $secs = sprintf('%.1f', microtime(true) - $t0);
+    $sid = newLink($uid, $url, $w, $h, $size, $fmt, $secs);
     [$text, $mk] = successCard($uid, getLink($sid));
     edit($chat, $mid, $text, $mk);
 }
@@ -619,11 +629,12 @@ function handleUpdate($u) {
 header('Content-Type: text/plain; charset=utf-8');
 
 if (!UP_URL || !UP_TOKEN) {
-    exit('Database env missing: UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN (বা KV_REST_API_URL / KV_REST_API_TOKEN)');
+    exit("❌ Database env missing\nUPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN (বা KV_REST_API_URL / KV_REST_API_TOKEN) যোগ করে Redeploy দিন।");
 }
 
 if (isset($_GET['setup'])) {
     if ($_GET['setup'] !== SECRET) { http_response_code(403); exit('forbidden'); }
+    if (BOT_TOKEN === '') exit('❌ BOT_TOKEN missing. Vercel Environment Variables এ BOT_TOKEN যোগ করে Redeploy দিন।');
     $url = 'https://' . $_SERVER['HTTP_HOST'] . '/';
     $r = tg('setWebhook', ['url' => $url, 'secret_token' => SECRET, 'allowed_updates' => ['message', 'callback_query'], 'drop_pending_updates' => true]);
     tg('setMyCommands', ['commands' => [['command' => 'start', 'description' => '🏠 Home']]]);
@@ -634,11 +645,23 @@ if (isset($_GET['setup'])) {
     exit("Webhook: $url\n" . json_encode($r, JSON_UNESCAPED_UNICODE));
 }
 
+// ---- সাধারণ লিংক (ব্রাউজার): স্ট্যাটাস পেজ ----
 if (($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'] ?? '') !== SECRET) {
-    http_response_code(403);
-    exit('Bot is running');
+    $db = 'OK';
+    try { R('PING'); } catch (Throwable $ex) { $db = 'ERROR: ' . $ex->getMessage(); }
+    if (BOT_TOKEN === '') {
+        $wh = 'BOT_TOKEN missing (Vercel Environment Variables এ যোগ করুন)';
+    } else {
+        $i = tg('getWebhookInfo');
+        if (empty($i['ok'])) $wh = 'Token error: ' . ($i['description'] ?? 'unknown');
+        elseif (empty($i['result']['url'])) $wh = 'NOT SET → /?setup=... লিংক খুলুন';
+        else $wh = 'SET' . (!empty($i['result']['last_error_message']) ? ' | last error: ' . $i['result']['last_error_message'] : ' | no errors');
+    }
+    echo "✅ ImgHippo Pro Bot is running\n\nPHP: " . PHP_VERSION . "\nDatabase: $db\nWebhook: $wh\n";
+    exit;
 }
 
+// ---- টেলিগ্রাম থেকে আসা আপডেট ----
 $update = json_decode(file_get_contents('php://input'), true);
 if ($update) {
     try {
