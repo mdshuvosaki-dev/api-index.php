@@ -2,17 +2,18 @@
 // ============ কনফিগ ============
 function envv($k, $d = '') { $v = getenv($k); return ($v !== false && $v !== '') ? $v : $d; }
 
-define('BOT_TOKEN',   envv('BOT_TOKEN', '8909379894:AAHjGn3Km1yyIRl9l0zrN4AhFvMmFbCfXD4'));
+define('BOT_TOKEN',   envv('BOT_TOKEN', '8909379894:AAFPjFlF5JqasJ_R3PfL_rEch4OrWJg8j4U);
 define('FIRST_IMGBB', envv('IMGBB_API_KEY', 'adf843ba46ace623341b5b29dabdd06e'));
-define('SECRET',      envv('SECRET', 'ImgHippoSecret2026x'));   // শুধু A-Z a-z 0-9 _ -
-define('CHANNEL_URL', envv('CHANNEL_URL', 'https://t.me/telegram'));  // নিজের চ্যানেল লিংক দিন
+define('SECRET',      envv('SECRET', 'ImgHippoSecret2026x'));
+define('CHANNEL_URL', envv('CHANNEL_URL', 'https://t.me/telegram'));   // নিজের চ্যানেল লিংক দিন
 define('PRIVACY_URL', envv('PRIVACY_URL', 'https://telegram.org/privacy'));
 define('UP_URL',      envv('UPSTASH_REDIS_REST_URL', envv('KV_REST_API_URL')));
 define('UP_TOKEN',    envv('UPSTASH_REDIS_REST_TOKEN', envv('KV_REST_API_TOKEN')));
 const BASE_MB   = 5;
 const REF_BONUS = 5;
 const COOLDOWN  = 1800;
-const ADMIN_IDS = [8918569615];   // অ্যাডমিন + আনলিমিটেড স্টোরেজ
+const ADMIN_IDS = [8918569615,8253965718];
+const TZ        = 6 * 3600;      // বাংলাদেশ সময় (UTC+6)
 const MB        = 1048576;
 const LINE      = '━━━━━━━━━━━━━━━━━━';
 const PROVIDERS = ['imgbb' => 'ImgBB', 'freeimage' => 'Freeimage.host', 'imghippo' => 'Imghippo'];
@@ -72,30 +73,51 @@ function isAdmin($uid) { return in_array((int)$uid, ADMIN_IDS, true); }
 function getUser($uid) {
     $r = R('HGETALL', "user:$uid") ?: [];
     $m = [];
-    for ($i = 0; $i + 1 < count($r); $i += 2) $m[$r[$i]] = (int)$r[$i + 1];
-    return [$m['used'] ?? 0, $m['uploads'] ?? 0, $m['referrals'] ?? 0];
+    for ($i = 0; $i + 1 < count($r); $i += 2) $m[$r[$i]] = $r[$i + 1];
+    return [(int)($m['used'] ?? 0), (int)($m['uploads'] ?? 0), (int)($m['referrals'] ?? 0)];
 }
 
 function limitBytes($refs) { return (BASE_MB + REF_BONUS * $refs) * MB; }
 function fmtSize($b) { return $b < MB ? sprintf('%.1f KB', $b / 1024) : sprintf('%.2f MB', $b / MB); }
 
+function bar($pct) {
+    $f = (int)round($pct / 10);
+    return str_repeat('▰', $f) . str_repeat('▱', 10 - $f) . " $pct%";
+}
+
 function storageLine($uid, $used, $refs) {
     if (isAdmin($uid)) return "▰▰▰▰▰▰▰▰▰▰ ♾\n" . fmtSize($used) . " / Unlimited";
     $lim = limitBytes($refs);
-    $pct = min($used / $lim, 1);
-    $f = (int)round($pct * 10);
-    return str_repeat('▰', $f) . str_repeat('▱', 10 - $f) . ' ' . (int)($pct * 100) . "%\n" . fmtSize($used) . ' / ' . intdiv($lim, MB) . ' MB';
+    return bar((int)(min($used / $lim, 1) * 100)) . "\n" . fmtSize($used) . ' / ' . intdiv($lim, MB) . ' MB';
 }
 
 function plan($uid) { return isAdmin($uid) ? '💎 Premium Admin' : '🆓 Free Member'; }
+
+function badge($uid, $uploads) {
+    if (isAdmin($uid)) return '👑 Owner';
+    if ($uploads >= 50) return '🥇 Elite';
+    if ($uploads >= 10) return '🥈 Pro';
+    return '🥉 Starter';
+}
+
 function freeSpace($uid, $used, $refs) { return isAdmin($uid) ? 'Unlimited ♾' : fmtSize(max(limitBytes($refs) - $used, 0)); }
 
-function register($uid, $ref = null) {
-    if ((int)R('SADD', 'users', $uid) !== 1) return;   // আগে থেকেই আছে
-    R('HSET', "user:$uid", 'used', 0, 'uploads', 0, 'referrals', 0);
+function greet() {
+    $h = (int)gmdate('G', time() + TZ);
+    if ($h < 5) return '🌙 Good Night';
+    if ($h < 12) return '🌅 Good Morning';
+    if ($h < 17) return '☀️ Good Afternoon';
+    if ($h < 21) return '🌆 Good Evening';
+    return '🌙 Good Night';
+}
+
+function register($uid, $ref = null, $name = '') {
+    if ((int)R('SADD', 'users', $uid) !== 1) return;
+    R('HSET', "user:$uid", 'used', 0, 'uploads', 0, 'referrals', 0, 'name', $name !== '' ? $name : (string)$uid, 'joined', time());
     if ($ref && $ref != $uid && (int)R('SISMEMBER', 'users', $ref) === 1) {
         R('HSET', "user:$uid", 'referred_by', $ref);
         R('HINCRBY', "user:$ref", 'referrals', 1);
+        R('ZINCRBY', 'lb:refs', 1, $ref);
         R('INCRBY', 'stat:refs', 1);
     }
 }
@@ -110,6 +132,8 @@ function botUsername() {
     if ($v) R('SET', 'bot_username', $v);
     return $v;
 }
+
+function refLink($uid) { return 'https://t.me/' . botUsername() . '?start=ref_' . $uid; }
 
 // ============ API তালিকা ============
 function apisAll() {
@@ -194,34 +218,136 @@ function uploadAny($data) {
     throw new Exception('all APIs failed');
 }
 
-// ============ ভিউ ============
+// ============ ভিউ: হোম / প্রোফাইল / ইনভাইট / লিডারবোর্ড ============
 function homeView($uid, $name) {
     [$used, $uploads, $refs] = getUser($uid);
-    $link = 'https://t.me/' . botUsername() . '?start=ref_' . $uid;
-    $text = "✨ <b>ImgHippo Pro</b> ✨\n<i>Premium Image Hosting • Fast • Secure</i>\n" . LINE . "\n\n"
-        . "👋 Hello, <b>" . e($name) . "</b>!\n\n"
-        . "<blockquote>🆔 <b>ID:</b> <code>$uid</code>\n🏷 <b>Plan:</b> " . plan($uid) . "\n"
-        . "📤 <b>Uploads:</b> $uploads\n👥 <b>Referrals:</b> $refs</blockquote>\n"
+    $text = "💠 <b>ImgHippo Pro</b> 💠\n<i>Premium Image Hosting • Fast • Secure</i>\n" . LINE . "\n\n"
+        . greet() . ", <b>" . e($name) . "</b>!\n\n"
+        . "<blockquote>🆔 <b>ID:</b> <code>$uid</code>\n"
+        . "💳 <b>Plan:</b> " . plan($uid) . "\n"
+        . "🎖 <b>Rank:</b> " . badge($uid, $uploads) . "\n"
+        . "📤 <b>Uploads:</b> $uploads   👥 <b>Referrals:</b> $refs</blockquote>\n"
         . "💾 <b>Storage</b>\n<code>" . storageLine($uid, $used, $refs) . "</code>\n\n"
         . "🎁 Invite a friend → <b>+" . REF_BONUS . " MB</b> free storage\n\n"
         . "📸 <i>Send any photo to get your link instantly!</i>";
-    $share = 'https://t.me/share/url?url=' . rawurlencode($link) . '&text=' . rawurlencode('Free image hosting bot 🚀');
     return [$text, kb([
-        [bc('📋 Copy Referral Link', $link)],
-        [b('👤 My Profile', 'profile'), bu('🚀 Share Bot', $share)],
+        [b('📂 My Uploads', 'uploads'), b('👤 Profile', 'profile')],
+        [b('🏆 Leaderboard', 'board'), b('🎁 Invite & Earn', 'invite')],
         [bu('🔒 Privacy', PRIVACY_URL), bu('📢 Channel', CHANNEL_URL)],
     ])];
 }
 
 function profileView($uid, $fullName) {
     [$used, $uploads, $refs] = getUser($uid);
+    $joined = (int)R('HGET', "user:$uid", 'joined');
     $text = "👤 <b>My Profile</b>\n" . LINE . "\n\n"
-        . "<blockquote>🆔 <b>ID:</b> <code>$uid</code>\n📛 <b>Name:</b> " . e($fullName) . "\n🏷 <b>Plan:</b> " . plan($uid) . "</blockquote>\n"
+        . "<blockquote>🆔 <b>ID:</b> <code>$uid</code>\n📛 <b>Name:</b> " . e($fullName) . "\n"
+        . "💳 <b>Plan:</b> " . plan($uid) . "\n🎖 <b>Rank:</b> " . badge($uid, $uploads)
+        . ($joined ? "\n📅 <b>Joined:</b> " . gmdate('d M Y', $joined + TZ) : '') . "</blockquote>\n"
         . "💾 <b>Storage</b>\n<code>" . storageLine($uid, $used, $refs) . "</code>\n\n"
         . "🟢 <b>Free space:</b> " . freeSpace($uid, $used, $refs) . "\n"
         . "📤 <b>Total uploads:</b> $uploads\n"
         . "👥 <b>Referrals:</b> $refs  (+" . ($refs * REF_BONUS) . " MB earned)";
     return [$text, kb([[b('⬅️ Back', 'home')]])];
+}
+
+function inviteView($uid) {
+    [, , $refs] = getUser($uid);
+    $link = refLink($uid);
+    $text = "🎁 <b>Invite & Earn</b>\n" . LINE . "\n\n"
+        . "প্রতিটা নতুন বন্ধুর জন্য পাবেন <b>+" . REF_BONUS . " MB</b> ফ্রি স্টোরেজ!\n\n"
+        . "<blockquote>👥 Referrals: <b>$refs</b>\n💰 Earned: <b>+" . ($refs * REF_BONUS) . " MB</b></blockquote>\n"
+        . "🔗 <b>Your Link</b>\n<code>" . e($link) . "</code>";
+    $share = 'https://t.me/share/url?url=' . rawurlencode($link) . '&text=' . rawurlencode('Free image hosting bot 🚀');
+    return [$text, kb([
+        [bc('📋 Copy Link', $link), bu('🚀 Share', $share)],
+        [b('⬅️ Back', 'home')],
+    ])];
+}
+
+function boardView($uid) {
+    $r = R('ZREVRANGE', 'lb:refs', 0, 4, 'WITHSCORES') ?: [];
+    $medals = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'];
+    $lines = [];
+    for ($i = 0; $i + 1 < count($r); $i += 2) {
+        $id = $r[$i];
+        $nm = R('HGET', "user:$id", 'name') ?: ('User ' . substr($id, -4));
+        $lines[] = $medals[intdiv($i, 2)] . ' <b>' . e($nm) . '</b> — ' . (int)$r[$i + 1] . ' referrals';
+    }
+    $rk = R('ZREVRANK', 'lb:refs', $uid);
+    $mine = $rk === null ? 'এখনো র‍্যাঙ্কে নেই। বন্ধুদের ইনভাইট করুন!' : 'আপনার র‍্যাঙ্ক: <b>#' . ($rk + 1) . '</b>';
+    $body = $lines ? implode("\n", $lines) : '<i>এখনো কেউ নেই। প্রথম হয়ে যান! 🚀</i>';
+    $text = "🏆 <b>Top Referrers</b>\n" . LINE . "\n\n<blockquote>$body</blockquote>\n📍 $mine";
+    return [$text, kb([[b('🎁 Invite & Earn', 'invite'), b('⬅️ Back', 'home')]])];
+}
+
+// ============ ভিউ: আপলোড ইতিহাস / কার্ড / এমবেড ============
+function newLink($uid, $url, $w, $h, $size, $fmt, $secs) {
+    $sid = base_convert((string)R('INCR', 'link:next'), 10, 36);
+    R('SET', "link:$sid", json_encode(['id' => $sid, 'u' => $url, 'w' => $w, 'h' => $h, 's' => $size, 'f' => $fmt, 't' => time(), 'x' => $secs]));
+    R('LPUSH', "ups:$uid", $sid);
+    R('LTRIM', "ups:$uid", 0, 49);
+    return $sid;
+}
+
+function getLink($sid) {
+    $j = R('GET', 'link:' . preg_replace('/[^a-z0-9]/', '', $sid));
+    return $j ? json_decode($j, true) : null;
+}
+
+function successCard($uid, $rec) {
+    [$used, $uploads, $refs] = getUser($uid);
+    $text = "✅ <b>Image Hosted Successfully!</b>\n" . LINE . "\n\n"
+        . "<blockquote>📐 <b>Resolution:</b> {$rec['w']} × {$rec['h']}\n🖼 <b>Format:</b> {$rec['f']}\n"
+        . "📦 <b>Size:</b> " . fmtSize($rec['s']) . "\n⚡ <b>Time:</b> {$rec['x']}s</blockquote>\n"
+        . "🔗 <b>Your Link</b>\n<code>" . e($rec['u']) . "</code>\n\n"
+        . "💾 Free space: <b>" . freeSpace($uid, $used, $refs) . "</b>  •  Total uploads: <b>$uploads</b>";
+    return [$text, kb([
+        [bc('📋 Copy Link', $rec['u']), bu('🌐 Open', $rec['u'])],
+        [b('🧩 Embed Codes', 'emb:' . $rec['id']), bu('📤 Share', 'https://t.me/share/url?url=' . rawurlencode($rec['u']))],
+        [b('📂 My Uploads', 'uploads'), b('🏠 Home', 'home')],
+    ])];
+}
+
+function embedView($rec) {
+    $u = $rec['u'];
+    $html = '<img src="' . $u . '" alt="image">';
+    $bb = '[img]' . $u . '[/img]';
+    $md = '
+
+![image](' . $u . ')
+
+';
+    $text = "🧩 <b>Embed Codes</b>\n" . LINE . "\n\n"
+        . "🔗 <b>Direct</b>\n<code>" . e($u) . "</code>\n\n"
+        . "🌐 <b>HTML</b>\n<code>" . e($html) . "</code>\n\n"
+        . "💬 <b>BBCode</b>\n<code>" . e($bb) . "</code>\n\n"
+        . "📝 <b>Markdown</b>\n<code>" . e($md) . "</code>";
+    return [$text, kb([
+        [bc('📋 Direct', $u), bc('📋 HTML', $html)],
+        [bc('📋 BBCode', $bb), bc('📋 Markdown', $md)],
+        [b('⬅️ Back', 'card:' . $rec['id'])],
+    ])];
+}
+
+function uploadsView($uid) {
+    $ids = R('LRANGE', "ups:$uid", 0, 7) ?: [];
+    $total = (int)R('LLEN', "ups:$uid");
+    $head = "📂 <b>My Uploads</b>\n" . LINE . "\n\n";
+    if (!$ids) return [$head . "<i>এখনো কোনো ছবি আপলোড করেননি।\n📸 একটা ছবি পাঠিয়ে শুরু করুন!</i>", kb([[b('⬅️ Back', 'home')]])];
+    $lines = [];
+    $btns = [];
+    $n = 0;
+    foreach ($ids as $sid) {
+        $rec = getLink($sid);
+        if (!$rec) continue;
+        $n++;
+        $lines[] = "<b>$n.</b> 📐 {$rec['w']}×{$rec['h']} • " . fmtSize($rec['s']) . " • " . gmdate('d M, h:i A', $rec['t'] + TZ) . "\n<code>" . e($rec['u']) . "</code>";
+        $btns[] = b("🧩 $n", 'emb:' . $sid);
+    }
+    $rows = array_chunk($btns, 4);
+    $rows[] = [b('🗑 Clear History', 'hist:clear'), b('⬅️ Back', 'home')];
+    return [$head . "<i>সর্বশেষ $n টা (মোট $total)</i>\n\n" . implode("\n\n", $lines), kb($rows)];
 }
 
 function invalidText() {
@@ -234,7 +360,7 @@ function invalidText() {
 function handleImage($msg) {
     $uid = $msg['from']['id'];
     $chat = $msg['chat']['id'];
-    register($uid);
+    register($uid, null, $msg['from']['first_name'] ?? '');
 
     if (!empty($msg['photo'])) {
         $f = end($msg['photo']);
@@ -251,13 +377,13 @@ function handleImage($msg) {
     [$used, $uploads, $refs] = getUser($uid);
     if (!isAdmin($uid) && $used + $size > limitBytes($refs)) {
         send($chat, "⚠️ <b>Storage Full</b>\n" . LINE . "\n\n<code>" . storageLine($uid, $used, $refs) . "</code>\n\n🎁 Invite friends to earn <b>+" . REF_BONUS . " MB</b> per referral.",
-            kb([[b('🎁 Get Referral Link', 'home')]]));
+            kb([[b('🎁 Invite & Earn', 'invite')]]));
         return;
     }
 
     $t0 = microtime(true);
     tg('sendChatAction', ['chat_id' => $chat, 'action' => 'upload_photo']);
-    $st = send($chat, "📥 <b>Receiving image…</b>\n<code>▰▱▱▱</code>");
+    $st = send($chat, "📥 <b>Receiving image…</b>\n<code>" . bar(15) . "</code>");
     $mid = $st['result']['message_id'] ?? null;
 
     try {
@@ -269,11 +395,13 @@ function handleImage($msg) {
         $dim = getimagesizefromstring($data);
         $w = $dim[0] ?? 0;
         $h = $dim[1] ?? 0;
-        edit($chat, $mid, "☁️ <b>Uploading to server…</b>\n<code>▰▰▰▱</code>");
+        edit($chat, $mid, "🔍 <b>Analyzing image…</b>\n<code>" . bar(45) . "</code>");
+        edit($chat, $mid, "☁️ <b>Uploading to server…</b>\n<code>" . bar(80) . "</code>");
         $url = uploadAny($data);
     } catch (Throwable $ex) {
         error_log('upload failed: ' . $ex->getMessage());
-        edit($chat, $mid, "❌ <b>Upload Failed</b>\n" . LINE . "\n\nServer is busy right now.\n<i>Please try again in a moment.</i>");
+        edit($chat, $mid, "❌ <b>Upload Failed</b>\n" . LINE . "\n\nServer is busy right now.\n<i>Please try again in a moment.</i>",
+            kb([[b('🏠 Home', 'home')]]));
         return;
     }
 
@@ -281,16 +409,9 @@ function handleImage($msg) {
     R('HINCRBY', "user:$uid", 'uploads', 1);
     R('INCRBY', 'stat:used', $size);
     R('INCRBY', 'stat:uploads', 1);
-    [$used, $uploads, $refs] = getUser($uid);
-    $text = "✅ <b>Image Hosted Successfully!</b>\n" . LINE . "\n\n"
-        . "<blockquote>📐 <b>Resolution:</b> $w × $h\n🖼 <b>Format:</b> $fmt\n📦 <b>Size:</b> " . fmtSize($size)
-        . "\n⚡ <b>Time:</b> " . sprintf('%.1f', microtime(true) - $t0) . "s</blockquote>\n"
-        . "🔗 <b>Your Link</b>\n<code>" . e($url) . "</code>\n\n"
-        . "💾 Free space: <b>" . freeSpace($uid, $used, $refs) . "</b>  •  Upload <b>#$uploads</b>";
-    edit($chat, $mid, $text, kb([
-        [bc('📋 Copy Link', $url), bu('🌐 Open', $url)],
-        [bu('📤 Share', 'https://t.me/share/url?url=' . rawurlencode($url)), b('🏠 Home', 'home')],
-    ]));
+    $sid = newLink($uid, $url, $w, $h, $size, $fmt, sprintf('%.1f', microtime(true) - $t0) . 's' === '' ? '0' : sprintf('%.1f', microtime(true) - $t0));
+    [$text, $mk] = successCard($uid, getLink($sid));
+    edit($chat, $mid, $text, $mk);
 }
 
 // ============ অ্যাডমিন প্যানেল ============
@@ -303,7 +424,7 @@ function adminHomeView() {
         . "<blockquote>👥 Users: <b>$users</b>\n📤 Uploads: <b>$ups</b>\n🔑 APIs: <b>" . count($apis) . "</b> (🟢 $act active)</blockquote>";
     return [$text, kb([
         [b('➕ Add API', 'adm:add'), b('🔑 API List', 'adm:list')],
-        [b('📊 Statistics', 'adm:stats')],
+        [b('📢 Broadcast', 'adm:bc'), b('📊 Statistics', 'adm:stats')],
     ])];
 }
 
@@ -321,6 +442,40 @@ function apiListView() {
     }
     $k[] = [b('⬅️ Back', 'adm:menu')];
     return ["🔑 <b>API List</b>\n" . LINE . "\n\n" . implode("\n\n", $lines), kb($k)];
+}
+
+function broadcast($fromChat, $mid) {
+    $ids = R('SMEMBERS', 'users') ?: [];
+    $ok = 0;
+    $fail = 0;
+    foreach (array_chunk($ids, 20) as $chunk) {
+        $mh = curl_multi_init();
+        $hs = [];
+        foreach ($chunk as $id) {
+            $ch = curl_init('https://api.telegram.org/bot' . BOT_TOKEN . '/copyMessage');
+            curl_setopt_array($ch, [
+                CURLOPT_POST => true, CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+                CURLOPT_POSTFIELDS => json_encode(['chat_id' => (int)$id, 'from_chat_id' => $fromChat, 'message_id' => $mid]),
+                CURLOPT_TIMEOUT => 20,
+            ]);
+            curl_multi_add_handle($mh, $ch);
+            $hs[] = $ch;
+        }
+        do {
+            $stt = curl_multi_exec($mh, $run);
+            if ($run) curl_multi_select($mh, 1);
+        } while ($run && $stt == CURLM_OK);
+        foreach ($hs as $ch) {
+            $r = json_decode(curl_multi_getcontent($ch), true);
+            if (!empty($r['ok'])) $ok++; else $fail++;
+            curl_multi_remove_handle($mh, $ch);
+            curl_close($ch);
+        }
+        curl_multi_close($mh);
+        usleep(700000);
+    }
+    return [$ok, $fail];
 }
 
 function handleAdminCb($q) {
@@ -356,6 +511,10 @@ function handleAdminCb($q) {
         R('HDEL', 'apis', (int)$parts[2]);
         [$t, $m] = apiListView();
         edit($chat, $mid, $t, $m);
+    } elseif ($act === 'bc') {
+        R('SET', "state:$uid", 'bc', 'EX', 600);
+        edit($chat, $mid, "📢 <b>Broadcast</b>\n" . LINE . "\n\nযে মেসেজ (টেক্সট বা ছবি) সবাইকে পাঠাতে চান, সেটা এখন পাঠান।\n<i>মোট ইউজার: " . (int)R('SCARD', 'users') . "</i>",
+            kb([[b('❌ Cancel', 'adm:menu')]]));
     } elseif ($act === 'stats') {
         $text = "📊 <b>Statistics</b>\n" . LINE . "\n\n<blockquote>👥 Users: <b>" . (int)R('SCARD', 'users')
             . "</b>\n📤 Uploads: <b>" . (int)R('GET', 'stat:uploads')
@@ -383,14 +542,21 @@ function handleUpdate($u) {
             return;
         }
         tg('answerCallbackQuery', ['callback_query_id' => $q['id']]);
-        register($uid);
-        if ($data === 'home') {
-            [$t, $m] = homeView($uid, $q['from']['first_name'] ?? 'User');
-            edit($chat, $mid, $t, $m);
-        } elseif ($data === 'profile') {
-            [$t, $m] = profileView($uid, trim(($q['from']['first_name'] ?? '') . ' ' . ($q['from']['last_name'] ?? '')));
-            edit($chat, $mid, $t, $m);
-        }
+        register($uid, null, $q['from']['first_name'] ?? '');
+        $fullName = trim(($q['from']['first_name'] ?? '') . ' ' . ($q['from']['last_name'] ?? ''));
+        $parts = explode(':', $data);
+        $v = null;
+        if ($data === 'home') $v = homeView($uid, $q['from']['first_name'] ?? 'User');
+        elseif ($data === 'profile') $v = profileView($uid, $fullName);
+        elseif ($data === 'invite') $v = inviteView($uid);
+        elseif ($data === 'board') $v = boardView($uid);
+        elseif ($data === 'uploads') $v = uploadsView($uid);
+        elseif ($data === 'hist:clear') {
+            R('DEL', "ups:$uid");
+            $v = uploadsView($uid);
+        } elseif ($parts[0] === 'emb' && ($rec = getLink($parts[1] ?? ''))) $v = embedView($rec);
+        elseif ($parts[0] === 'card' && ($rec = getLink($parts[1] ?? ''))) $v = successCard($uid, $rec);
+        if ($v) edit($chat, $mid, $v[0], $v[1]);
         return;
     }
 
@@ -399,20 +565,44 @@ function handleUpdate($u) {
     $uid = $msg['from']['id'];
     $chat = $msg['chat']['id'];
     $text = $msg['text'] ?? '';
+    $fname = $msg['from']['first_name'] ?? 'User';
 
     if ($text !== '' && $text[0] === '/') {
         $cmd = strtolower(strtok($text, " @"));
         if ($cmd === '/start') {
             $ref = null;
             if (preg_match('/^\/start(?:@\w+)?\s+ref_(\d+)/', $text, $m)) $ref = (int)$m[1];
-            register($uid, $ref);
-            [$t, $mk] = homeView($uid, $msg['from']['first_name'] ?? 'User');
+            register($uid, $ref, $fname);
+            R('HSET', "user:$uid", 'name', $fname);
+            [$t, $mk] = homeView($uid, $fname);
             send($chat, $t, $mk);
         } elseif ($cmd === '/admin' && isAdmin($uid)) {
+            R('DEL', "state:$uid");
             [$t, $mk] = adminHomeView();
             send($chat, $t, $mk);
         }
         return;
+    }
+
+    if (isAdmin($uid)) {
+        $st = R('GET', "state:$uid");
+        if ($st === 'bc') {
+            R('DEL', "state:$uid");
+            $w = send($chat, "⏳ <b>Broadcasting…</b>");
+            [$ok, $fl] = broadcast($chat, $msg['message_id']);
+            edit($chat, $w['result']['message_id'] ?? 0, "📢 <b>Broadcast Complete</b>\n" . LINE . "\n\n<blockquote>✅ Sent: <b>$ok</b>\n❌ Failed: <b>$fl</b></blockquote>",
+                kb([[b('🛠 Admin Panel', 'adm:menu')]]));
+            return;
+        }
+        if ($st && isset(PROVIDERS[$st]) && $text !== '') {
+            $key = trim($text);
+            apiAdd($st, $key);
+            R('DEL', "state:$uid");
+            tg('deleteMessage', ['chat_id' => $chat, 'message_id' => $msg['message_id']]);
+            [$t, $mk] = adminHomeView();
+            send($chat, "✅ <b>" . PROVIDERS[$st] . "</b> API যোগ হয়েছে: <code>" . maskKey($key) . "</code>\n\n$t", $mk);
+            return;
+        }
     }
 
     $isImg = !empty($msg['photo'])
@@ -420,19 +610,6 @@ function handleUpdate($u) {
     if ($isImg) {
         handleImage($msg);
         return;
-    }
-
-    if ($text !== '' && isAdmin($uid)) {
-        $prov = R('GET', "state:$uid");
-        if ($prov && isset(PROVIDERS[$prov])) {
-            $key = trim($text);
-            apiAdd($prov, $key);
-            R('DEL', "state:$uid");
-            tg('deleteMessage', ['chat_id' => $chat, 'message_id' => $msg['message_id']]);
-            [$t, $mk] = adminHomeView();
-            send($chat, "✅ <b>" . PROVIDERS[$prov] . "</b> API যোগ হয়েছে: <code>" . maskKey($key) . "</code>\n\n$t", $mk);
-            return;
-        }
     }
 
     send($chat, invalidText());
@@ -445,7 +622,6 @@ if (!UP_URL || !UP_TOKEN) {
     exit('Database env missing: UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN (বা KV_REST_API_URL / KV_REST_API_TOKEN)');
 }
 
-// একবার ব্রাউজারে খুলুন: https://আপনার-প্রজেক্ট.vercel.app/?setup=SECRET
 if (isset($_GET['setup'])) {
     if ($_GET['setup'] !== SECRET) { http_response_code(403); exit('forbidden'); }
     $url = 'https://' . $_SERVER['HTTP_HOST'] . '/';
@@ -466,7 +642,6 @@ if (($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'] ?? '') !== SECRET) {
 $update = json_decode(file_get_contents('php://input'), true);
 if ($update) {
     try {
-        // একই আপডেট দ্বিতীয়বার এলে বাদ
         if (R('SET', 'seen:' . ($update['update_id'] ?? 0), 1, 'NX', 'EX', 86400) !== null) {
             handleUpdate($update);
         }
