@@ -1,34 +1,37 @@
 <?php
 // ============ কনফিগ ============
-const BOT_TOKEN   = '8909379894:AAHjGn3Km1yyIRl9l0zrN4AhFvMmFbCfXD4';
-const FIRST_IMGBB = 'adf843ba46ace623341b5b29dabdd06e';
-const SECRET      = 'ImgHippoSecret2026x';      // নিজের মতো বদলান (শুধু A-Z a-z 0-9 _ -)
-const CHANNEL_URL = 'https://t.me/telegram';    // নিজের চ্যানেল লিংক দিন
-const PRIVACY_URL = 'https://telegram.org/privacy';
-const BASE_MB     = 5;
-const REF_BONUS   = 5;
-const COOLDOWN    = 1800;                       // ফেল করলে API ৩০ মিনিট বিশ্রামে
-const ADMIN_IDS   = [8918569615];               // অ্যাডমিন + আনলিমিটেড স্টোরেজ
-const MB          = 1048576;
-const LINE        = '━━━━━━━━━━━━━━━━━━';
-const PROVIDERS   = ['imgbb' => 'ImgBB', 'freeimage' => 'Freeimage.host', 'imghippo' => 'Imghippo'];
+function envv($k, $d = '') { $v = getenv($k); return ($v !== false && $v !== '') ? $v : $d; }
 
-// ============ ডাটাবেস ============
-$dir = __DIR__ . '/data';
-if (!is_dir($dir)) {
-    mkdir($dir, 0755, true);
-    file_put_contents("$dir/.htaccess", "Require all denied\nDeny from all\n");
-    file_put_contents("$dir/index.html", '');
-}
-$db = new PDO('sqlite:' . $dir . '/bot.db');
-$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-$db->exec("CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, used INTEGER DEFAULT 0, uploads INTEGER DEFAULT 0, referrals INTEGER DEFAULT 0, referred_by INTEGER)");
-$db->exec("CREATE TABLE IF NOT EXISTS apis(id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT, key TEXT, active INTEGER DEFAULT 1, uses INTEGER DEFAULT 0, fails INTEGER DEFAULT 0, cooldown_until REAL DEFAULT 0)");
-$db->exec("CREATE TABLE IF NOT EXISTS state(uid INTEGER PRIMARY KEY, prov TEXT)");
-$db->exec("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)");
-$db->exec("CREATE TABLE IF NOT EXISTS seen(update_id INTEGER PRIMARY KEY, ts INTEGER)");
-if (!$db->query("SELECT 1 FROM apis")->fetch()) {
-    $db->prepare("INSERT INTO apis(provider,key) VALUES('imgbb',?)")->execute([FIRST_IMGBB]);
+define('BOT_TOKEN',   envv('BOT_TOKEN', '8909379894:AAHjGn3Km1yyIRl9l0zrN4AhFvMmFbCfXD4'));
+define('FIRST_IMGBB', envv('IMGBB_API_KEY', 'adf843ba46ace623341b5b29dabdd06e'));
+define('SECRET',      envv('SECRET', 'ImgHippoSecret2026x'));   // শুধু A-Z a-z 0-9 _ -
+define('CHANNEL_URL', envv('CHANNEL_URL', 'https://t.me/telegram'));  // নিজের চ্যানেল লিংক দিন
+define('PRIVACY_URL', envv('PRIVACY_URL', 'https://telegram.org/privacy'));
+define('UP_URL',      envv('UPSTASH_REDIS_REST_URL', envv('KV_REST_API_URL')));
+define('UP_TOKEN',    envv('UPSTASH_REDIS_REST_TOKEN', envv('KV_REST_API_TOKEN')));
+const BASE_MB   = 5;
+const REF_BONUS = 5;
+const COOLDOWN  = 1800;
+const ADMIN_IDS = [8918569615];   // অ্যাডমিন + আনলিমিটেড স্টোরেজ
+const MB        = 1048576;
+const LINE      = '━━━━━━━━━━━━━━━━━━';
+const PROVIDERS = ['imgbb' => 'ImgBB', 'freeimage' => 'Freeimage.host', 'imghippo' => 'Imghippo'];
+
+// ============ Redis (Upstash REST) ============
+function R(...$cmd) {
+    $ch = curl_init(UP_URL);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . UP_TOKEN, 'Content-Type: application/json'],
+        CURLOPT_POSTFIELDS => json_encode(array_map('strval', $cmd), JSON_UNESCAPED_UNICODE),
+        CURLOPT_TIMEOUT => 15,
+    ]);
+    $res = curl_exec($ch);
+    curl_close($ch);
+    $j = json_decode($res ?: '{}', true);
+    if (isset($j['error'])) throw new Exception($j['error']);
+    return $j['result'] ?? null;
 }
 
 // ============ টেলিগ্রাম হেল্পার ============
@@ -39,7 +42,7 @@ function tg($method, $params = []) {
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
         CURLOPT_POSTFIELDS => json_encode($params, JSON_UNESCAPED_UNICODE),
-        CURLOPT_TIMEOUT => 60,
+        CURLOPT_TIMEOUT => 50,
     ]);
     $res = curl_exec($ch);
     curl_close($ch);
@@ -55,7 +58,7 @@ function send($chat, $text, $markup = null) {
 function edit($chat, $mid, $text, $markup = null) {
     $p = ['chat_id' => $chat, 'message_id' => $mid, 'text' => $text, 'parse_mode' => 'HTML', 'disable_web_page_preview' => true];
     if ($markup) $p['reply_markup'] = $markup;
-    return tg('editMessageText', $p);   // "message is not modified" error নিজে থেকেই এড়ানো হয়
+    return tg('editMessageText', $p);
 }
 
 function kb($rows) { return ['inline_keyboard' => $rows]; }
@@ -63,18 +66,17 @@ function b($text, $cb) { return ['text' => $text, 'callback_data' => $cb]; }
 function bu($text, $url) { return ['text' => $text, 'url' => $url]; }
 function bc($text, $copy) { return ['text' => $text, 'copy_text' => ['text' => $copy]]; }
 function e($s) { return htmlspecialchars((string)$s, ENT_QUOTES); }
-function isAdmin($uid) { return in_array($uid, ADMIN_IDS); }
+function isAdmin($uid) { return in_array((int)$uid, ADMIN_IDS, true); }
 
-// ============ হেল্পার ============
+// ============ ইউজার ডেটা ============
 function getUser($uid) {
-    global $db;
-    $s = $db->prepare("SELECT used,uploads,referrals FROM users WHERE id=?");
-    $s->execute([$uid]);
-    return $s->fetch(PDO::FETCH_NUM) ?: [0, 0, 0];
+    $r = R('HGETALL', "user:$uid") ?: [];
+    $m = [];
+    for ($i = 0; $i + 1 < count($r); $i += 2) $m[$r[$i]] = (int)$r[$i + 1];
+    return [$m['used'] ?? 0, $m['uploads'] ?? 0, $m['referrals'] ?? 0];
 }
 
 function limitBytes($refs) { return (BASE_MB + REF_BONUS * $refs) * MB; }
-
 function fmtSize($b) { return $b < MB ? sprintf('%.1f KB', $b / 1024) : sprintf('%.2f MB', $b / MB); }
 
 function storageLine($uid, $used, $refs) {
@@ -86,49 +88,63 @@ function storageLine($uid, $used, $refs) {
 }
 
 function plan($uid) { return isAdmin($uid) ? '💎 Premium Admin' : '🆓 Free Member'; }
-
-function freeSpace($uid, $used, $refs) {
-    return isAdmin($uid) ? 'Unlimited ♾' : fmtSize(max(limitBytes($refs) - $used, 0));
-}
+function freeSpace($uid, $used, $refs) { return isAdmin($uid) ? 'Unlimited ♾' : fmtSize(max(limitBytes($refs) - $used, 0)); }
 
 function register($uid, $ref = null) {
-    global $db;
-    $s = $db->prepare("SELECT 1 FROM users WHERE id=?");
-    $s->execute([$uid]);
-    if ($s->fetch()) return;
-    $refOk = false;
-    if ($ref && $ref != $uid) {
-        $s = $db->prepare("SELECT 1 FROM users WHERE id=?");
-        $s->execute([$ref]);
-        $refOk = (bool)$s->fetch();
+    if ((int)R('SADD', 'users', $uid) !== 1) return;   // আগে থেকেই আছে
+    R('HSET', "user:$uid", 'used', 0, 'uploads', 0, 'referrals', 0);
+    if ($ref && $ref != $uid && (int)R('SISMEMBER', 'users', $ref) === 1) {
+        R('HSET', "user:$uid", 'referred_by', $ref);
+        R('HINCRBY', "user:$ref", 'referrals', 1);
+        R('INCRBY', 'stat:refs', 1);
     }
-    $db->prepare("INSERT INTO users(id,referred_by) VALUES(?,?)")->execute([$uid, $refOk ? $ref : null]);
-    if ($refOk) $db->prepare("UPDATE users SET referrals=referrals+1 WHERE id=?")->execute([$ref]);
 }
 
 function maskKey($k) { return strlen($k) > 8 ? substr($k, 0, 4) . '…' . substr($k, -4) : '****'; }
 
 function botUsername() {
-    global $db;
-    $s = $db->prepare("SELECT v FROM kv WHERE k='bot_username'");
-    $s->execute();
-    $v = $s->fetchColumn();
+    $v = R('GET', 'bot_username');
     if ($v) return $v;
     $r = tg('getMe');
     $v = $r['result']['username'] ?? '';
-    if ($v) $db->prepare("INSERT OR REPLACE INTO kv(k,v) VALUES('bot_username',?)")->execute([$v]);
+    if ($v) R('SET', 'bot_username', $v);
     return $v;
 }
 
+// ============ API তালিকা ============
+function apisAll() {
+    if (R('SETNX', 'apis:init', 1) == 1 && FIRST_IMGBB) {
+        $id = (int)R('INCR', 'apis:next');
+        R('HSET', 'apis', $id, json_encode(['provider' => 'imgbb', 'key' => FIRST_IMGBB, 'active' => 1, 'uses' => 0, 'fails' => 0, 'cd' => 0]));
+    }
+    $r = R('HGETALL', 'apis') ?: [];
+    $out = [];
+    for ($i = 0; $i + 1 < count($r); $i += 2) {
+        $d = json_decode($r[$i + 1], true);
+        $d['id'] = (int)$r[$i];
+        $out[] = $d;
+    }
+    usort($out, fn($a, $c) => $a['id'] <=> $c['id']);
+    return $out;
+}
+
+function apiSave($d) {
+    $id = $d['id'];
+    unset($d['id']);
+    R('HSET', 'apis', $id, json_encode($d));
+}
+
+function apiAdd($prov, $key) {
+    $id = (int)R('INCR', 'apis:next');
+    apiSave(['id' => $id, 'provider' => $prov, 'key' => $key, 'active' => 1, 'uses' => 0, 'fails' => 0, 'cd' => 0]);
+}
+
 // ============ আপলোড (অটো ফেইলওভার) ============
-function httpPost($url, $fields, $timeout = 60) {
+function httpPost($url, $fields) {
     $ch = curl_init($url);
     curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POSTFIELDS => $fields,
-        CURLOPT_TIMEOUT => $timeout,
-        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_POST => true, CURLOPT_RETURNTRANSFER => true, CURLOPT_POSTFIELDS => $fields,
+        CURLOPT_TIMEOUT => 40, CURLOPT_FOLLOWLOCATION => true,
     ]);
     $res = curl_exec($ch);
     $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -159,19 +175,20 @@ function upImghippo($key, $data) {
 }
 
 function uploadAny($data) {
-    global $db;
-    $s = $db->prepare("SELECT id,provider,key FROM apis WHERE active=1 AND cooldown_until<=? ORDER BY id");
-    $s->execute([time()]);
-    $rows = $s->fetchAll(PDO::FETCH_NUM);
-    if (!$rows) $rows = $db->query("SELECT id,provider,key FROM apis WHERE active=1 ORDER BY id")->fetchAll(PDO::FETCH_NUM);
+    $all = array_values(array_filter(apisAll(), fn($a) => $a['active']));
+    $ready = array_values(array_filter($all, fn($a) => $a['cd'] <= time()));
+    $list = $ready ?: $all;
     $fn = ['imgbb' => 'upImgbb', 'freeimage' => 'upFreeimage', 'imghippo' => 'upImghippo'];
-    foreach ($rows as [$id, $prov, $key]) {
+    foreach ($list as $a) {
         try {
-            $url = $fn[$prov]($key, $data);
-            $db->prepare("UPDATE apis SET uses=uses+1 WHERE id=?")->execute([$id]);
+            $url = $fn[$a['provider']]($a['key'], $data);
+            $a['uses']++;
+            apiSave($a);
             return $url;
         } catch (Throwable $ex) {
-            $db->prepare("UPDATE apis SET fails=fails+1, cooldown_until=? WHERE id=?")->execute([time() + COOLDOWN, $id]);
+            $a['fails']++;
+            $a['cd'] = time() + COOLDOWN;
+            apiSave($a);
         }
     }
     throw new Exception('all APIs failed');
@@ -215,7 +232,6 @@ function invalidText() {
 
 // ============ ছবি আপলোড ============
 function handleImage($msg) {
-    global $db;
     $uid = $msg['from']['id'];
     $chat = $msg['chat']['id'];
     register($uid);
@@ -253,15 +269,18 @@ function handleImage($msg) {
         $dim = getimagesizefromstring($data);
         $w = $dim[0] ?? 0;
         $h = $dim[1] ?? 0;
-        edit($chat, $mid, "🔍 <b>Analyzing image…</b>\n<code>▰▰▱▱</code>");
         edit($chat, $mid, "☁️ <b>Uploading to server…</b>\n<code>▰▰▰▱</code>");
         $url = uploadAny($data);
     } catch (Throwable $ex) {
+        error_log('upload failed: ' . $ex->getMessage());
         edit($chat, $mid, "❌ <b>Upload Failed</b>\n" . LINE . "\n\nServer is busy right now.\n<i>Please try again in a moment.</i>");
         return;
     }
 
-    $db->prepare("UPDATE users SET used=used+?, uploads=uploads+1 WHERE id=?")->execute([$size, $uid]);
+    R('HINCRBY', "user:$uid", 'used', $size);
+    R('HINCRBY', "user:$uid", 'uploads', 1);
+    R('INCRBY', 'stat:used', $size);
+    R('INCRBY', 'stat:uploads', 1);
     [$used, $uploads, $refs] = getUser($uid);
     $text = "✅ <b>Image Hosted Successfully!</b>\n" . LINE . "\n\n"
         . "<blockquote>📐 <b>Resolution:</b> $w × $h\n🖼 <b>Format:</b> $fmt\n📦 <b>Size:</b> " . fmtSize($size)
@@ -276,11 +295,12 @@ function handleImage($msg) {
 
 // ============ অ্যাডমিন প্যানেল ============
 function adminHomeView() {
-    global $db;
-    $u = $db->query("SELECT COUNT(*), COALESCE(SUM(uploads),0) FROM users")->fetch(PDO::FETCH_NUM);
-    $a = $db->query("SELECT COUNT(*), COALESCE(SUM(active),0) FROM apis")->fetch(PDO::FETCH_NUM);
+    $users = (int)R('SCARD', 'users');
+    $ups = (int)R('GET', 'stat:uploads');
+    $apis = apisAll();
+    $act = count(array_filter($apis, fn($a) => $a['active']));
     $text = "🛠 <b>Admin Control Panel</b>\n" . LINE . "\n\n"
-        . "<blockquote>👥 Users: <b>{$u[0]}</b>\n📤 Uploads: <b>{$u[1]}</b>\n🔑 APIs: <b>{$a[0]}</b> (🟢 {$a[1]} active)</blockquote>";
+        . "<blockquote>👥 Users: <b>$users</b>\n📤 Uploads: <b>$ups</b>\n🔑 APIs: <b>" . count($apis) . "</b> (🟢 $act active)</blockquote>";
     return [$text, kb([
         [b('➕ Add API', 'adm:add'), b('🔑 API List', 'adm:list')],
         [b('📊 Statistics', 'adm:stats')],
@@ -288,23 +308,22 @@ function adminHomeView() {
 }
 
 function apiListView() {
-    global $db;
     $back = kb([[b('⬅️ Back', 'adm:menu')]]);
-    $rows = $db->query("SELECT id,provider,key,active,uses,fails,cooldown_until FROM apis")->fetchAll(PDO::FETCH_NUM);
-    if (!$rows) return ['🔑 কোনো API নেই। আগে ➕ Add API করুন।', $back];
+    $apis = apisAll();
+    if (!$apis) return ['🔑 কোনো API নেই। আগে ➕ Add API করুন।', $back];
     $lines = [];
     $k = [];
-    foreach ($rows as [$id, $p, $key, $a, $u, $f, $cd]) {
-        $state = !$a ? '⏸ Off' : ($cd > time() ? '😴 Cooldown' : '🟢 Active');
-        $lines[] = "<b>#$id</b> " . (PROVIDERS[$p] ?? $p) . "  <code>" . maskKey($key) . "</code>\n     $state  •  ✅ $u  •  ⚠️ $f";
-        $k[] = [b(($a ? '⏸ Disable' : '▶️ Enable') . " #$id", "adm:tog:$id"), b("🗑 #$id", "adm:del:$id")];
+    foreach ($apis as $a) {
+        $id = $a['id'];
+        $state = !$a['active'] ? '⏸ Off' : ($a['cd'] > time() ? '😴 Cooldown' : '🟢 Active');
+        $lines[] = "<b>#$id</b> " . (PROVIDERS[$a['provider']] ?? $a['provider']) . "  <code>" . maskKey($a['key']) . "</code>\n     $state  •  ✅ {$a['uses']}  •  ⚠️ {$a['fails']}";
+        $k[] = [b(($a['active'] ? '⏸ Disable' : '▶️ Enable') . " #$id", "adm:tog:$id"), b("🗑 #$id", "adm:del:$id")];
     }
     $k[] = [b('⬅️ Back', 'adm:menu')];
     return ["🔑 <b>API List</b>\n" . LINE . "\n\n" . implode("\n\n", $lines), kb($k)];
 }
 
 function handleAdminCb($q) {
-    global $db;
     $uid = $q['from']['id'];
     $chat = $q['message']['chat']['id'];
     $mid = $q['message']['message_id'];
@@ -312,7 +331,7 @@ function handleAdminCb($q) {
     $act = $parts[1] ?? '';
 
     if ($act === 'menu') {
-        $db->prepare("DELETE FROM state WHERE uid=?")->execute([$uid]);
+        R('DEL', "state:$uid");
         [$t, $m] = adminHomeView();
         edit($chat, $mid, $t, $m);
     } elseif ($act === 'add') {
@@ -321,31 +340,33 @@ function handleAdminCb($q) {
         $rows[] = [b('⬅️ Back', 'adm:menu')];
         edit($chat, $mid, "➕ <b>Add API</b>\n" . LINE . "\n\nকোন সাইটের API যোগ করবেন?", kb($rows));
     } elseif ($act === 'prov' && isset(PROVIDERS[$parts[2] ?? ''])) {
-        $db->prepare("INSERT OR REPLACE INTO state(uid,prov) VALUES(?,?)")->execute([$uid, $parts[2]]);
+        R('SET', "state:$uid", $parts[2], 'EX', 600);
         edit($chat, $mid, "🔑 <b>" . PROVIDERS[$parts[2]] . "</b>\n" . LINE . "\n\nAPI key পাঠান।\n<i>সেভ হলে আপনার মেসেজ অটো ডিলিট হবে।</i>",
             kb([[b('❌ Cancel', 'adm:menu')]]));
     } elseif ($act === 'list') {
         [$t, $m] = apiListView();
         edit($chat, $mid, $t, $m);
     } elseif ($act === 'tog') {
-        $db->prepare("UPDATE apis SET active=1-active, cooldown_until=0 WHERE id=?")->execute([(int)$parts[2]]);
+        foreach (apisAll() as $a) {
+            if ($a['id'] === (int)$parts[2]) { $a['active'] = $a['active'] ? 0 : 1; $a['cd'] = 0; apiSave($a); }
+        }
         [$t, $m] = apiListView();
         edit($chat, $mid, $t, $m);
     } elseif ($act === 'del') {
-        $db->prepare("DELETE FROM apis WHERE id=?")->execute([(int)$parts[2]]);
+        R('HDEL', 'apis', (int)$parts[2]);
         [$t, $m] = apiListView();
         edit($chat, $mid, $t, $m);
     } elseif ($act === 'stats') {
-        $u = $db->query("SELECT COUNT(*), COALESCE(SUM(uploads),0), COALESCE(SUM(used),0), COALESCE(SUM(referrals),0) FROM users")->fetch(PDO::FETCH_NUM);
-        edit($chat, $mid, "📊 <b>Statistics</b>\n" . LINE . "\n\n<blockquote>👥 Users: <b>{$u[0]}</b>\n📤 Uploads: <b>{$u[1]}</b>\n💾 Total used: <b>" . fmtSize($u[2]) . "</b>\n🎁 Referrals: <b>{$u[3]}</b></blockquote>",
-            kb([[b('⬅️ Back', 'adm:menu')]]));
+        $text = "📊 <b>Statistics</b>\n" . LINE . "\n\n<blockquote>👥 Users: <b>" . (int)R('SCARD', 'users')
+            . "</b>\n📤 Uploads: <b>" . (int)R('GET', 'stat:uploads')
+            . "</b>\n💾 Total used: <b>" . fmtSize((int)R('GET', 'stat:used'))
+            . "</b>\n🎁 Referrals: <b>" . (int)R('GET', 'stat:refs') . "</b></blockquote>";
+        edit($chat, $mid, $text, kb([[b('⬅️ Back', 'adm:menu')]]));
     }
 }
 
 // ============ আপডেট হ্যান্ডলার ============
 function handleUpdate($u) {
-    global $db;
-
     if (isset($u['callback_query'])) {
         $q = $u['callback_query'];
         $uid = $q['from']['id'];
@@ -402,13 +423,11 @@ function handleUpdate($u) {
     }
 
     if ($text !== '' && isAdmin($uid)) {
-        $s = $db->prepare("SELECT prov FROM state WHERE uid=?");
-        $s->execute([$uid]);
-        $prov = $s->fetchColumn();
-        if ($prov) {
+        $prov = R('GET', "state:$uid");
+        if ($prov && isset(PROVIDERS[$prov])) {
             $key = trim($text);
-            $db->prepare("INSERT INTO apis(provider,key) VALUES(?,?)")->execute([$prov, $key]);
-            $db->prepare("DELETE FROM state WHERE uid=?")->execute([$uid]);
+            apiAdd($prov, $key);
+            R('DEL', "state:$uid");
             tg('deleteMessage', ['chat_id' => $chat, 'message_id' => $msg['message_id']]);
             [$t, $mk] = adminHomeView();
             send($chat, "✅ <b>" . PROVIDERS[$prov] . "</b> API যোগ হয়েছে: <code>" . maskKey($key) . "</code>\n\n$t", $mk);
@@ -420,41 +439,39 @@ function handleUpdate($u) {
 }
 
 // ============ এন্ট্রি পয়েন্ট ============
-// ১ বার ব্রাউজারে খুলুন: https://আপনার-ডোমেইন/bot.php?setup=SECRET
+header('Content-Type: text/plain; charset=utf-8');
+
+if (!UP_URL || !UP_TOKEN) {
+    exit('Database env missing: UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN (বা KV_REST_API_URL / KV_REST_API_TOKEN)');
+}
+
+// একবার ব্রাউজারে খুলুন: https://আপনার-প্রজেক্ট.vercel.app/?setup=SECRET
 if (isset($_GET['setup'])) {
     if ($_GET['setup'] !== SECRET) { http_response_code(403); exit('forbidden'); }
-    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $url = $scheme . '://' . $_SERVER['HTTP_HOST'] . strtok($_SERVER['REQUEST_URI'], '?');
+    $url = 'https://' . $_SERVER['HTTP_HOST'] . '/';
     $r = tg('setWebhook', ['url' => $url, 'secret_token' => SECRET, 'allowed_updates' => ['message', 'callback_query'], 'drop_pending_updates' => true]);
     tg('setMyCommands', ['commands' => [['command' => 'start', 'description' => '🏠 Home']]]);
     foreach (ADMIN_IDS as $a) {
         tg('setMyCommands', ['commands' => [['command' => 'start', 'description' => '🏠 Home'], ['command' => 'admin', 'description' => '🛠 Admin Panel']],
             'scope' => ['type' => 'chat', 'chat_id' => $a]]);
     }
-    header('Content-Type: text/plain; charset=utf-8');
     exit("Webhook: $url\n" . json_encode($r, JSON_UNESCAPED_UNICODE));
 }
 
 if (($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'] ?? '') !== SECRET) {
     http_response_code(403);
-    exit('forbidden');
+    exit('Bot is running');
 }
 
 $update = json_decode(file_get_contents('php://input'), true);
-http_response_code(200);
-echo 'ok';
-if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
-ignore_user_abort(true);
-set_time_limit(120);
-
-if (!$update) exit;
-$s = $db->prepare("INSERT OR IGNORE INTO seen(update_id,ts) VALUES(?,?)");
-$s->execute([$update['update_id'] ?? 0, time()]);
-if ($s->rowCount() === 0) exit;                       // একই আপডেট দ্বিতীয়বার এলে বাদ
-if (mt_rand(1, 50) === 1) $db->exec("DELETE FROM seen WHERE ts<" . (time() - 86400));
-
-try {
-    handleUpdate($update);
-} catch (Throwable $ex) {
-    error_log('Bot error: ' . $ex->getMessage());
+if ($update) {
+    try {
+        // একই আপডেট দ্বিতীয়বার এলে বাদ
+        if (R('SET', 'seen:' . ($update['update_id'] ?? 0), 1, 'NX', 'EX', 86400) !== null) {
+            handleUpdate($update);
+        }
+    } catch (Throwable $ex) {
+        error_log('Bot error: ' . $ex->getMessage());
+    }
 }
+echo 'ok';
