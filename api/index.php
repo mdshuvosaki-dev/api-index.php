@@ -11,7 +11,7 @@ register_shutdown_function(function () {
 // ============ কনফিগ ============
 function envv($k, $d = '') { $v = getenv($k); return ($v !== false && $v !== '') ? $v : $d; }
 
-define('BOT_TOKEN',   envv('BOT_TOKEN', '8909379894:AAGTqrzB8jEP3A8rvSycRzrC23ISpFhQb68'));                  // Vercel Environment Variables এ দিন
+define('BOT_TOKEN',   envv('BOT_TOKEN', '8909379894:AAFmJgKGXZuM3JW6oqDW4Xx-V2rWyDjDS8E'));                  // Vercel Environment Variables এ দিন
 define('FIRST_IMGBB', envv('IMGBB_API_KEY', 'adf843ba46ace623341b5b29dabdd06e'));
 define('SECRET',      envv('SECRET', 'ImgHippoSecret2026x'));  // শুধু A-Z a-z 0-9 _ -
 define('CHANNEL_URL', envv('CHANNEL_URL', 'https://t.me/telegram'));   // নিজের চ্যানেল লিংক দিন
@@ -21,7 +21,7 @@ define('UP_TOKEN',    envv('UPSTASH_REDIS_REST_TOKEN', envv('KV_REST_API_TOKEN')
 const BASE_MB   = 5;
 const REF_BONUS = 5;
 const COOLDOWN  = 1800;
-const ADMIN_IDS = [8918569615,8253965718];
+const ADMIN_IDS = [8918569615];
 const TZ        = 6 * 3600;      // বাংলাদেশ সময় (UTC+6)
 const MB        = 1048576;
 const LINE      = '━━━━━━━━━━━━━━━━━━';
@@ -242,7 +242,7 @@ function homeView($uid, $name) {
     return [$text, kb([
         [b('📂 My Uploads', 'uploads'), b('👤 Profile', 'profile')],
         [b('🏆 Leaderboard', 'board'), b('🎁 Invite & Earn', 'invite')],
-        [bu('🔒 Privacy', PRIVACY_URL), bu('📢 Channel',https://t.me/TECH_BD_BY_MUSTAFIZUR0 )],
+        [bu('🔒 Privacy', PRIVACY_URL), bu('📢 Channel', CHANNEL_URL)],
     ])];
 }
 
